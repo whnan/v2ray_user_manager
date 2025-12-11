@@ -1,18 +1,18 @@
 #!/bin/bash
 
 #====================================================
-# V2Ray 用户管理脚本 - 远程一键版 (兼容性修复版)
+# V2Ray 用户管理脚本 - 远程一键版 (修复管道交互问题)
 # 适用于 V2Ray + VMess + WS + TLS + Nginx 的服务端
 #   System Request: Debian 12
-#   Author: Hn (Fixed for Shell Compatibility)
-#   Version: 1.4
+#   Author: Hn (Fixed for Pipe Execution)
+#   Version: 1.5
 #====================================================
 
 # --- 脚本配置存储路径 ---
 SCRIPT_CONF="/etc/v2ray_manager.conf"
 LOGO="====== V2Ray User Manager ======"
 
-# --- 辅助函数：标准化输出 (解决 echo -e 兼容性问题) ---
+# --- 辅助函数 ---
 info() {
     printf "\033[32m%s\033[0m\n" "$1"
 }
@@ -34,7 +34,7 @@ check_root() {
     fi
 }
 
-# --- 检查必要依赖 (jq, qrencode) ---
+# --- 检查必要依赖 ---
 check_dependencies() {
     if ! command -v jq >/dev/null 2>&1; then
         text "正在安装 jq..."
@@ -50,16 +50,15 @@ check_dependencies() {
 # --- 初始化配置 ---
 init_config() {
     if [ -f "$SCRIPT_CONF" ]; then
-        # 如果配置文件存在，直接读取
         source "$SCRIPT_CONF"
     else
         warn "首次运行，请配置基本信息："
         
         # 1. 获取 V2Ray 配置文件路径
+        # 注意：< /dev/tty 是为了在 curl | bash 模式下强制读取键盘输入
         printf "请输入 V2Ray 配置文件路径 (回车默认: /etc/v2ray/config.json): "
-        read input_config
+        read input_config < /dev/tty
         
-        # 去除可能存在的首尾空格
         input_config=$(echo "$input_config" | xargs)
 
         if [ -z "$input_config" ]; then
@@ -68,29 +67,28 @@ init_config() {
             CONFIG="$input_config"
         fi
 
-        # 打印调试信息，确认路径是否正确
-        printf "-> 设定的路径为: \033[36m[%s]\033[0m\n" "$CONFIG"
+        # 修复 printf 报错：在 -> 前加空格，避免被识别为参数
+        printf " -> 设定的路径为: \033[36m[%s]\033[0m\n" "$CONFIG"
         
-        # 验证文件是否存在
         if [ ! -f "$CONFIG" ]; then
             error "错误：系统找不到文件 [$CONFIG]"
             error "请检查：1.路径是否完全正确 2.V2Ray是否已安装"
+            # 如果文件不存在，强制退出，防止产生错误配置
             exit 1
         fi
 
         # 2. 获取域名
         printf "请输入伪装域名 (例如 www.example.com): "
-        read DOMAIN
+        read DOMAIN < /dev/tty
         DOMAIN=$(echo "$DOMAIN" | xargs)
 
         # 3. 智能获取 WS 路径
-        # 使用 jq 提取 path，如果为 null 则返回空
         detected_path=$(jq -r '.inbounds[0].streamSettings.wsSettings.path // empty' "$CONFIG")
 
         if [ -n "$detected_path" ]; then
-            printf "-> 检测到配置文件中的 WS 路径: \033[36m%s\033[0m\n" "$detected_path"
+            printf " -> 检测到配置文件中的 WS 路径: \033[36m%s\033[0m\n" "$detected_path"
             printf "确认使用此路径吗？ (回车确认 / 输入新路径): "
-            read input_ws
+            read input_ws < /dev/tty
             input_ws=$(echo "$input_ws" | xargs)
             
             if [ -z "$input_ws" ]; then
@@ -100,11 +98,10 @@ init_config() {
             fi
         else
             printf "无法自动获取 WS 路径，请输入 (例如 /ray/): "
-            read WS_PATH
+            read WS_PATH < /dev/tty
             WS_PATH=$(echo "$WS_PATH" | xargs)
         fi
 
-        # 保存配置到本地文件
         echo "CONFIG=\"$CONFIG\"" > "$SCRIPT_CONF"
         echo "DOMAIN=\"$DOMAIN\"" >> "$SCRIPT_CONF"
         echo "WS_PATH=\"$WS_PATH\"" >> "$SCRIPT_CONF"
@@ -135,7 +132,7 @@ list_users() {
 
 add_user() {
     printf "请输入用户名（备注）："
-    read remark
+    read remark < /dev/tty
     remark=$(echo "$remark" | xargs)
     if [ -z "$remark" ]; then error "用户名不能为空"; return; fi
 
@@ -143,10 +140,9 @@ add_user() {
     limitIp=0
 
     printf "请输入设备上限（0 表示无限制）: "
-    read limitIp
+    read limitIp < /dev/tty
     limitIp=${limitIp:-0}
 
-    # 使用临时文件操作，确保安全
     jq ".inbounds[0].settings.clients += [{\"id\":\"$uuid\",\"alterId\":0,\"email\":\"$remark\",\"limitIp\":$limitIp}]" "$CONFIG" > tmp.$$.json && mv tmp.$$.json "$CONFIG"
 
     restart_v2ray
@@ -170,7 +166,7 @@ create_user_link() {
     text "-------------------------"
 
     printf "是否生成二维码？ (Y/n): "
-    read yz
+    read yz < /dev/tty
     if [[ "$yz" == "Y" || "$yz" == "y" || "$yz" == "" ]]; then
         text "=== VMess 配置二维码 ==="
         qrencode -t ANSI "$vmess_link"
@@ -182,12 +178,12 @@ create_user_link() {
 delete_user() {
     list_users
     printf "请输入要删除的用户名："
-    read em
+    read em < /dev/tty
     em=$(echo "$em" | xargs)
     if [ -z "$em" ]; then return; fi
 
     printf "确认删除 [%s]？ (Y/n): " "$em"
-    read yz
+    read yz < /dev/tty
     if [[ "$yz" == "Y" || "$yz" == "y" ]]; then
         jq "del(.inbounds[0].settings.clients[] | select(.email==\"$em\"))" "$CONFIG" > tmp.$$.json && mv tmp.$$.json "$CONFIG"
         restart_v2ray
@@ -200,24 +196,24 @@ delete_user() {
 modify_user() {
     list_users
     printf "请输入用户名: "
-    read em
+    read em < /dev/tty
     em=$(echo "$em" | xargs)
     if [ -z "$em" ]; then return; fi
 
     text "1) 修改设备上限"
     text "2) 修改备注"
     printf "请选择操作: "
-    read opt
+    read opt < /dev/tty
     case $opt in
         1)
             printf "输入新的设备上限(0 表示无限制): "
-            read new_limit
+            read new_limit < /dev/tty
             jq "(.inbounds[0].settings.clients[] | select(.email==\"$em\") | .limitIp) = $new_limit" \
             "$CONFIG" > tmp.$$.json && mv tmp.$$.json "$CONFIG"
             ;;
         2)
             printf "输入新备注: "
-            read new_remark
+            read new_remark < /dev/tty
             jq "(.inbounds[0].settings.clients[] | select(.email==\"$em\") | .email) = \"$new_remark\"" \
             "$CONFIG" > tmp.$$.json && mv tmp.$$.json "$CONFIG"
             ;;
@@ -233,7 +229,7 @@ modify_user() {
 show_info() {
     list_users
     printf "输入用户名："
-    read em
+    read em < /dev/tty
     em=$(echo "$em" | xargs)
 
     uid=$(jq -r ".inbounds[0].settings.clients[] | select(.email==\"$em\") | .id" "$CONFIG")
@@ -263,7 +259,7 @@ main_menu() {
     text "5) 重置本脚本配置 (修改域名/路径)"
     text "0) 退出"
     printf "请选择: "
-    read opt
+    read opt < /dev/tty
     case $opt in
         1) add_user ;;
         2) modify_user ;;
@@ -274,7 +270,7 @@ main_menu() {
         *) text "无效输入";;
     esac
     text "按任意键返回菜单..."
-    read -n 1
+    read -n 1 < /dev/tty
     main_menu
 }
 
